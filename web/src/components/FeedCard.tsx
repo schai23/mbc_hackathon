@@ -4,9 +4,9 @@
  * Displays a single briefing card with:
  * - Topic badges and region
  * - Headline
- * - Polymarket preview (if available)
+ * - Polymarket preview (probability badge + title + link)
  * - Due diligence bullet points
- * - Sources section
+ * - Sources section (horizontal pills)
  * - Related tickers
  * - Action buttons with track/opinion state
  */
@@ -45,6 +45,124 @@ function getDomainFromUrl(url: string): string {
     }
 }
 
+// ============ DD Types ============
+
+interface DDSection {
+    label: string;
+    bullets: string[];
+}
+
+interface DDResponse {
+    sections: DDSection[];
+    cached: boolean;
+}
+
+// ============ Collapsible DD Section ============
+
+function DDSectionCollapsible({
+    label,
+    bullets,
+    defaultExpanded = false
+}: {
+    label: string;
+    bullets: string[];
+    defaultExpanded?: boolean;
+}) {
+    const [isOpen, setIsOpen] = React.useState(defaultExpanded);
+
+    return (
+        <div className="dd-section-collapsible">
+            <button
+                className="dd-section-toggle"
+                onClick={() => setIsOpen(!isOpen)}
+            >
+                <span className="dd-section-label">{label}</span>
+                <span className="dd-section-arrow">{isOpen ? "▼" : "▶"}</span>
+            </button>
+            {isOpen && (
+                <ul className="bullets-list dd-section-content">
+                    {bullets.map((bullet, idx) => (
+                        <li key={idx} className="bullet-item">
+                            {bullet}
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+}
+
+// ============ Structured DD Component ============
+
+function StructuredDD({ item }: { item: BriefingItem }) {
+    const [ddData, setDdData] = React.useState<DDResponse | null>(null);
+    const [loading, setLoading] = React.useState(false);
+    const [error, setError] = React.useState(false);
+    const [hasFetched, setHasFetched] = React.useState(false);
+
+    // Fetch DD on first render
+    React.useEffect(() => {
+        if (!hasFetched && !loading && !error) {
+            setHasFetched(true);
+            setLoading(true);
+            fetch("/api/dd", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    id: item.id,
+                    headline: item.headline,
+                    question: item.primaryMarketTitle || item.headline,
+                    sourceLinks: item.sourceLinks,
+                    topics: item.topics,
+                    region: item.region,
+                    yesPrice: item.primaryMarketImpliedProb,
+                    volume24hr: item.volume24hr,
+                }),
+            })
+                .then((res) => res.json())
+                .then((data) => {
+                    setDdData(data);
+                    setLoading(false);
+                })
+                .catch(() => {
+                    setError(true);
+                    setLoading(false);
+                });
+        }
+    }, [hasFetched, loading, error, item]);
+
+    if (loading) {
+        return <p className="dd-loading">Loading analysis...</p>;
+    }
+
+    if (error || !ddData || !ddData.sections) {
+        // Fallback to basic bullets
+        return (
+            <div className="dd-sections">
+                <DDSectionCollapsible
+                    label="Summary"
+                    bullets={item.bullets}
+                    defaultExpanded={true}
+                />
+            </div>
+        );
+    }
+
+    return (
+        <div className="dd-sections">
+            {ddData.sections.map((section, idx) => (
+                <DDSectionCollapsible
+                    key={idx}
+                    label={section.label}
+                    bullets={section.bullets}
+                    defaultExpanded={idx === 0} // First section expanded by default
+                />
+            ))}
+        </div>
+    );
+}
+
+
 export function FeedCard({
     item,
     isTracked,
@@ -54,7 +172,6 @@ export function FeedCard({
     onToggleDisagree,
     onIgnore,
 }: FeedCardProps) {
-    const [expanded, setExpanded] = useState(true);
 
     // Get color from first topic
     const primaryTopic = item.topics[0];
@@ -99,90 +216,104 @@ export function FeedCard({
             {/* Headline */}
             <h2 className="card-headline">{item.headline}</h2>
 
-            {/* Polymarket Preview Section */}
+            {/* Polymarket Preview Section - Redesigned */}
             {(hasPrimaryMarket || hasPolymarket) && (
-                <a
-                    href={hasPolymarket ? item.polymarketUrls[0] : undefined}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={`polymarket-link ${!hasPolymarket ? "no-link" : ""}`}
-                >
-                    <div className="polymarket-content">
-                        <span className="polymarket-label">
-                            {hasPolymarket ? "View on Polymarket" : "Market View"}
-                        </span>
-                        {item.primaryMarketTitle && (
-                            <span className="polymarket-subtitle">{item.primaryMarketTitle}</span>
-                        )}
-                        {item.primaryMarketImpliedProb !== undefined && (
-                            <span className="polymarket-prob">
-                                Implied probability: {Math.round(item.primaryMarketImpliedProb * 100)}%
+                <div className="market-preview">
+                    {/* Probability Badge */}
+                    {item.primaryMarketImpliedProb !== undefined && (
+                        <div className="market-prob-badge">
+                            <span className="prob-value">
+                                {Math.round(item.primaryMarketImpliedProb * 100)}%
                             </span>
+                            <span className="prob-label">YES</span>
+                        </div>
+                    )}
+
+                    {/* Market Info */}
+                    <div className="market-info">
+                        {item.primaryMarketTitle && (
+                            <p className="market-title">{item.primaryMarketTitle}</p>
+                        )}
+                        {item.primaryMarketNote && (
+                            <p className="market-note">{item.primaryMarketNote}</p>
                         )}
                     </div>
-                    {hasPolymarket && <span className="polymarket-arrow">→</span>}
-                </a>
+
+                    {/* Polymarket Link - with fallback to search */}
+                    {hasPolymarket ? (
+                        <a
+                            href={item.polymarketUrls[0]}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="market-link"
+                        >
+                            View on Polymarket →
+                        </a>
+                    ) : (
+                        <a
+                            href={`https://polymarket.com/markets?_q=${encodeURIComponent(item.headline.slice(0, 50))}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="market-link market-link-search"
+                        >
+                            Search Polymarket
+                        </a>
+                    )}
+                </div>
             )}
 
-            {/* Due Diligence Bullets */}
-            <div className={`bullets-container ${expanded ? "expanded" : ""}`}>
-                <button
-                    className="bullets-toggle"
-                    onClick={() => setExpanded(!expanded)}
-                >
-                    Due Diligence {expanded ? "▼" : "▶"}
-                </button>
-                {expanded && (
-                    <ul className="bullets-list">
-                        {item.bullets.map((bullet, index) => (
-                            <li key={index} className="bullet-item">
-                                {bullet}
-                            </li>
-                        ))}
-                    </ul>
-                )}
-            </div>
+            {/* Structured Due Diligence */}
+            <StructuredDD item={item} />
 
-            {/* Sources Section */}
+            {/* Sources Section - Horizontal Pills */}
             {hasSources && (
-                <div className="sources-container">
+                <div className="sources-section">
                     <span className="sources-label">Sources</span>
-                    <ul className="sources-list">
+                    <div className="sources-pills">
                         {item.sourceLinks.map((link, index) => (
-                            <li key={index}>
-                                <a
-                                    href={link}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="source-link"
-                                >
-                                    {getDomainFromUrl(link)}
-                                </a>
-                            </li>
+                            <a
+                                key={index}
+                                href={link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="source-pill"
+                            >
+                                {getDomainFromUrl(link)}
+                            </a>
                         ))}
-                    </ul>
+                    </div>
                 </div>
             )}
 
             {/* Related Tickers / Investment Ideas */}
             {item.relatedTickers && item.relatedTickers.length > 0 && (
                 <div className="tickers-container">
-                    <span className="tickers-label">
-                        {hasPolymarket || hasPrimaryMarket ? "Related Tickers:" : "Investment Ideas:"}
-                    </span>
+                    <span className="tickers-label">Related:</span>
                     <div className="tickers-list">
-                        {item.relatedTickers.map((ticker) => (
-                            <a
-                                key={ticker}
-                                href={getTickerUrl(ticker)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className={`ticker-badge ticker-${getTickerType(ticker)}`}
-                                title={ticker}
-                            >
-                                {ticker}
-                            </a>
-                        ))}
+                        {item.relatedTickers.map((ticker, idx) => {
+                            // Handle both string and TickerResult formats
+                            const symbol = typeof ticker === "string" ? ticker : ticker.symbol;
+                            const type = typeof ticker === "string" ? getTickerType(ticker) : ticker.type;
+                            const title = typeof ticker === "string" ? ticker : `${ticker.symbol}: ${ticker.reason}`;
+                            const url = typeof ticker === "string"
+                                ? getTickerUrl(ticker)
+                                : (type === "crypto"
+                                    ? `https://www.coingecko.com/en/coins/${symbol.toLowerCase()}`
+                                    : `https://finance.yahoo.com/quote/${symbol}`);
+
+                            return (
+                                <a
+                                    key={`${symbol}-${idx}`}
+                                    href={url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className={`ticker-badge ticker-${type}`}
+                                    title={title}
+                                >
+                                    {symbol}
+                                </a>
+                            );
+                        })}
                     </div>
                 </div>
             )}
@@ -213,7 +344,7 @@ export function FeedCard({
                 <button
                     className="action-btn action-ignore"
                     onClick={() => onIgnore(item.id)}
-                    title="Ignore this item"
+                    title="Dismiss this item"
                 >
                     Ignore
                 </button>
@@ -230,3 +361,4 @@ export function FeedCard({
 }
 
 export default FeedCard;
+
